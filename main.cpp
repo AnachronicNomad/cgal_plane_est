@@ -22,7 +22,7 @@
 
 #include <CGAL/jet_smooth_point_set.h>
 #include <CGAL/jet_estimate_normals.h>
-#include <CGAL/mst_orient_normals.h>
+//#include <CGAL/mst_orient_normals.h>
 
 #include <CGAL/Shape_detection/Efficient_RANSAC.h>
 
@@ -51,6 +51,8 @@
 #include <CGAL/boost/graph/kruskal_min_spanning_tree.h>
 #include <map>
 
+#include <typeinfo>
+
 // types
 using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
 //using FT = Kernel::FT;
@@ -67,7 +69,8 @@ using PointData = boost::tuple<
     RGBA,       // Photo Color
     RGBA,       // RANSAC Shape Colorization
     size_t,     // Estimated Patch ID
-    RGBA>;      // Estimated Patch Colorization
+    RGBA,       // Estimated Patch Colorization
+    size_t>;    // orderering in the container? 
 
 using PointMap = CGAL::Nth_of_tuple_property_map<0, PointData>;
 using NormalMap = CGAL::Nth_of_tuple_property_map<1, PointData>;
@@ -230,7 +233,7 @@ int main (int argc, char* argv[]) {
 
     // Process remaining lines in file
 
-    for (uint64_t i = 0; std::getline(infile, line); i++) 
+    for (size_t i = 0; std::getline(infile, line); i++) 
     {
         std::istringstream tokenizer(line);
 
@@ -256,7 +259,8 @@ int main (int argc, char* argv[]) {
             rgba_info, 
             shape_info,
             patch_id,
-            patch_info
+            patch_info,
+            i
         );
 
         points.push_back(point);
@@ -303,6 +307,11 @@ int main (int argc, char* argv[]) {
         points.end(),
         sort_traits
     );
+
+    // reset the index counters for all the Point_3s within the spatially-sorted container
+    for (size_t i=0; i<points.size(); i++) {
+        boost::get<6>(points[i]) = i;
+    }
 
     //
     //  Estimate average number of neighbors in local neighborhood for normals 
@@ -441,7 +450,7 @@ int main (int argc, char* argv[]) {
             boost::get<3>(p) = rgb;
 
             // insert Point_3 data for triangulation and attach PointData info
-            auto vertex = tr.insert(boost::get<0>(p));
+            TriTraits::Vertex_handle vertex = tr.insert(boost::get<0>(p));
             vertex->info() = p;
 
             index_it++; // next assigned point
@@ -453,40 +462,95 @@ int main (int argc, char* argv[]) {
             tr.number_of_facets() << "\tfacets" << std::endl;
 
         // build a Graph out of the triangulation that we can do a Minimum-Spanning-Tree on
+        // examples taken from https://www.boost.org/doc/libs/1_80_0/libs/graph/example/kruskal-example.cpp
         using Graph = boost::adjacency_list<
-                        boost::vecS,        // OutEdgeList
-                        boost::vecS,        // VertexList
-                        boost::undirectedS, // Directed
-                        boost::no_property, // VertexProperties
-                        boost::property< boost::edge_weight_t, int >,  // EdgeProperties
-                        boost::no_property, // GraphProperties
-                        boost::listS        // EdgeList
+                        boost::vecS,            // OutEdgeList
+                        boost::vecS,            // VertexList
+                        boost::undirectedS,     // Directed
+                        boost::no_property,     // VertexProperties
+                        boost::property< boost::edge_weight_t, double >  // EdgeProperties
                         >;
-        using Edge = boost:graph_traits< TriTraits >::edge_descriptor;
-        //using Edge = boost::graph_traits<Graph>::edge_descriptor;
+        using Edge = boost::graph_traits<Graph>::edge_descriptor;
         using E = std::pair< size_t, size_t >; // <: TODO - should be iterator index of vertex in Triangulation_3 instead of size_t?
 
-        std::vector<E> edge_array;
-        std::vector<float> weights;
+        std::vector<E> edges;
+        std::vector<double> weights;
 
-        // Question(?) :> Should be iterating over "finite" edges here? 
-        for (auto edge : tr.all_edges()) {
-            // insert simplex (!!) edge (between-vertices) here 
-            edge_array.push_back(...);
-            // generate weight using CGAL::squared_distance(...)
-            weights.push_back(...);
+        // iterate over Finite Facets in the triangulation to access the Geom_traits::Triangle
+        // add vertices and their "neighbors" for each facet to the Graph representation
+        for (TriTraits::Vertex_handle vtx : tr.finite_vertex_handles()) {
+            std::vector<TriTraits::Vertex_handle> adjacent;
+            auto shit = tr.adjacent_vertices(vtx, std::back_inserter(adjacent));
+
+            auto vertex = tr.point(vtx);
+
+            for (auto adjacent_vtx : adjacent) {
+                auto next_vtx = tr.point(adjacent_vtx);
+                double weight = std::sqrt(CGAL::squared_distance(vertex, next_vtx));
+
+                /*
+                E edge = E(
+                        boost::get<6>(vtx->info()),
+                        boost::get<6>(adjacent_vtx->info())
+                    );
+                */
+
+                edges.push_back(
+                    E(
+                        boost::get<6>(vtx->info()),
+                        boost::get<6>(adjacent_vtx->info())
+                    )
+                );
+                weights.push_back(weight);
+
+                //std::cout << "Edge " << edge.first << " <--> " << edge.second << " with weight " << weight << std::endl;
+            }
         }
 
+        std::cout << "copy out edge and weight vectors to arrays" << std::endl;
+
         // build Graph from `edge_array` and `weights`
+        E edge_array[] = { E(0, 2), E(3,1), E(1, 3), E(1, 4), E(2, 1), E(2, 3), E(3, 4), E(4, 0), E(4, 1) };
+        double weight_array[] = { 1.0, 1.0, 1.0, 2.0, 7.0, 3.0, 1.0, 1.0, 1.0 };
+
+        /*
+        //size_t length = edges.size();
+        E* edge_array = new E[ edges.size() ];
+        std::copy(edges.begin(), edges.end(), edge_array);
+
+        //double weight_array[ weights.size() ];
+        double* weight_array = new double[ weights.size() ];
+        std::copy(weights.begin(), weights.end(), weight_array);
+        */
+
+        int num_nodes = tr.number_of_vertices();
+        std::size_t num_edges = sizeof(edge_array) / sizeof(E);
+
+        Graph g(edge_array, edge_array + num_edges, weight_array, num_nodes);
 
         // build Euclidean-Minimum-Spanning-Tree (EMST) as list of simplex edges between vertices
+        boost::property_map<Graph, boost::edge_weight_t>::type weight = boost::get(boost::edge_weight, g);
+        std::vector<Edge> spanning_tree;
+
+        boost::kruskal_minimum_spanning_tree(g, std::back_inserter(spanning_tree));
 
         // - traverse EMST from start of list, performing "cuts" into "patches" when we have hit
         // max patch distance (euclidean) from current "first" vertex of "patch". 
         // - have to be able to access Triangulation_3 vertex info (via `locate`?) here
         // - foreach collection of PointData in patch, assign `patch_id` and diagnostic color info,
         //   then commit individual "patches" collections of Point_3 and RGBA photocolor to DB 
+        std::cout << "Found minimum spanning tree of " << spanning_tree.size() << " edges for #vertices " << tr.number_of_vertices() << std::endl;
+        std::cout << "Print the edges in the MST:" << std::endl;
+        for (std::vector< Edge >::iterator ei = spanning_tree.begin();
+            ei != spanning_tree.end(); ++ei)
+        {
+            std::cout << boost::source(*ei, g) << " <--> " << boost::target(*ei, g)
+                    << " with weight of " << weight[*ei] << std::endl;
+        }
 
+
+        //delete[] edge_array;
+        //delete[] weight_array;
         it++; // next shape
     }
 

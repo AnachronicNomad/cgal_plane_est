@@ -51,8 +51,6 @@ endif()
 find_package( TBB REQUIRED )
 include( CGAL_TBB_support )
 
-find_package( MLPACK REQUIRED )
-
 # include for local directory
 
 # include for local package
