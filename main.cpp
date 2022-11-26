@@ -414,6 +414,8 @@ int main (int argc, char* argv[]) {
     EfficientRANSAC::Shape_range::iterator it = shapes.begin();
     srand(time(0));
 
+    size_t patch_counter = 0;
+
     std::cout << "Shape primitives: " << std::endl;
     while (it != shapes.end()) {
         boost::shared_ptr<EfficientRANSAC::Shape> shape = *it;
@@ -473,84 +475,198 @@ int main (int argc, char* argv[]) {
         using Edge = boost::graph_traits<Graph>::edge_descriptor;
         using E = std::pair< size_t, size_t >; // <: TODO - should be iterator index of vertex in Triangulation_3 instead of size_t?
 
-        std::vector<E> edges;
-        std::vector<double> weights;
+        Graph g(tr.number_of_vertices());
+        boost::property_map< Graph, boost::edge_weight_t >::type weightmap = boost::get(boost::edge_weight, g);
 
-        // iterate over Finite Facets in the triangulation to access the Geom_traits::Triangle
-        // add vertices and their "neighbors" for each facet to the Graph representation
-        for (TriTraits::Vertex_handle vtx : tr.finite_vertex_handles()) {
-            std::vector<TriTraits::Vertex_handle> adjacent;
-            auto shit = tr.adjacent_vertices(vtx, std::back_inserter(adjacent));
+        // iterate over finite edges in the triangle, and add these 
+        for (
+                Triangulation_3::Finite_edges_iterator eit = tr.finite_edges_begin();
+                eit != tr.finite_edges_end(); 
+                eit++
+        ) 
+        {
+            Triangulation_3::Segment s = tr.segment(*eit);
 
-            auto vertex = tr.point(vtx);
+            Point_3 vtx = s.point(0);
+            Point_3 n_vtx = s.point(1);
 
-            for (auto adjacent_vtx : adjacent) {
-                auto next_vtx = tr.point(adjacent_vtx);
-                double weight = std::sqrt(CGAL::squared_distance(vertex, next_vtx));
+            // locate the (*eit), get vertex handles?
+            // from https://www.appsloveworld.com/cplus/100/204/how-to-get-the-source-and-target-points-from-edge-iterator-in-cgal
+            Triangulation_3::Vertex_handle vh1 = eit->first->vertex((eit->second + 1) % 3);
+            Triangulation_3::Vertex_handle vh2 = eit->first->vertex((eit->second + 2) % 3);
 
-                /*
-                E edge = E(
-                        boost::get<6>(vtx->info()),
-                        boost::get<6>(adjacent_vtx->info())
+            double weight = std::sqrt(CGAL::squared_distance(vtx, n_vtx));
+
+            if ( (false == tr.is_infinite(vh1)) && 
+                 (false == tr.is_infinite(vh2)) )
+            {
+                Edge e;
+                bool inserted;
+                boost::tie(e, inserted)
+                    = boost::add_edge(
+                        boost::get<6>(vh1->info()),
+                        boost::get<6>(vh2->info()),
+                        g
                     );
-                */
-
-                edges.push_back(
-                    E(
-                        boost::get<6>(vtx->info()),
-                        boost::get<6>(adjacent_vtx->info())
-                    )
-                );
-                weights.push_back(weight);
-
-                //std::cout << "Edge " << edge.first << " <--> " << edge.second << " with weight " << weight << std::endl;
+                weightmap[e] = weight;
             }
         }
 
-        std::cout << "copy out edge and weight vectors to arrays" << std::endl;
-
-        // build Graph from `edge_array` and `weights`
-        E edge_array[] = { E(0, 2), E(3,1), E(1, 3), E(1, 4), E(2, 1), E(2, 3), E(3, 4), E(4, 0), E(4, 1) };
-        double weight_array[] = { 1.0, 1.0, 1.0, 2.0, 7.0, 3.0, 1.0, 1.0, 1.0 };
-
-        /*
-        //size_t length = edges.size();
-        E* edge_array = new E[ edges.size() ];
-        std::copy(edges.begin(), edges.end(), edge_array);
-
-        //double weight_array[ weights.size() ];
-        double* weight_array = new double[ weights.size() ];
-        std::copy(weights.begin(), weights.end(), weight_array);
-        */
-
-        int num_nodes = tr.number_of_vertices();
-        std::size_t num_edges = sizeof(edge_array) / sizeof(E);
-
-        Graph g(edge_array, edge_array + num_edges, weight_array, num_nodes);
-
         // build Euclidean-Minimum-Spanning-Tree (EMST) as list of simplex edges between vertices
-        boost::property_map<Graph, boost::edge_weight_t>::type weight = boost::get(boost::edge_weight, g);
         std::vector<Edge> spanning_tree;
-
         boost::kruskal_minimum_spanning_tree(g, std::back_inserter(spanning_tree));
 
-        // - traverse EMST from start of list, performing "cuts" into "patches" when we have hit
-        // max patch distance (euclidean) from current "first" vertex of "patch". 
-        // - have to be able to access Triangulation_3 vertex info (via `locate`?) here
-        // - foreach collection of PointData in patch, assign `patch_id` and diagnostic color info,
-        //   then commit individual "patches" collections of Point_3 and RGBA photocolor to DB 
+        // TODO :> recreate a new Graph containing only those edges of the EMST
+        Graph spanning_graph(tr.number_of_vertices());
+        boost::property_map< Graph, boost::edge_weight_t >::type spanning_weightmap = boost::get(boost::edge_weight, spanning_graph);
+
+        // iterate minimum spanning tree to build a new Graph with specified edges
         std::cout << "Found minimum spanning tree of " << spanning_tree.size() << " edges for #vertices " << tr.number_of_vertices() << std::endl;
-        std::cout << "Print the edges in the MST:" << std::endl;
         for (std::vector< Edge >::iterator ei = spanning_tree.begin();
             ei != spanning_tree.end(); ++ei)
         {
-            std::cout << boost::source(*ei, g) << " <--> " << boost::target(*ei, g)
-                    << " with weight of " << weight[*ei] << std::endl;
+            // Add the edge going one way
+            size_t source = boost::source(*ei, g); 
+            size_t target = boost::target(*ei, g);
+            double weight = weightmap[*ei];
+
+            Edge e;
+            bool inserted;
+            boost::tie(e, inserted) = 
+                boost::add_edge(
+                    source, 
+                    target,
+                    spanning_graph
+                );
+            spanning_weightmap[e] = weight;
+
+            // also add edge going the other way
+            Edge e2;
+            bool inserted2;
+            boost::tie(e2, inserted2) = 
+                boost::add_edge(
+                    target, 
+                    source,
+                    spanning_graph
+                );
+            spanning_weightmap[e2] = weight;
         }
 
+        boost::graph_traits<Graph>::vertex_iterator i, end;
+        boost::graph_traits<Graph>::adjacency_iterator ai, a_end;
+        boost::property_map<Graph, boost::vertex_index_t>::type index_map = boost::get(boost::vertex_index, g);
 
-        //delete[] edge_array;
-        //delete[] weight_array;
+        size_t max_adjacency = 0;
+        boost::graph_traits<Graph>::vertex_descriptor max_adj_vtx;
+
+        size_t n_vertices = std::distance(i, end);
+
+        for (boost::tie(i, end) = boost::vertices(spanning_graph); i != end; ++i) {
+            boost::tie(ai, a_end) = boost::adjacent_vertices(*i, spanning_graph);
+
+            size_t adj_count = std::distance(ai, a_end);
+
+            if (adj_count > max_adjacency) {
+                max_adjacency = adj_count;
+                max_adj_vtx = *i;
+            }
+        }
+
+        // TODO :> Find maximum spanning distance between any two vertices in MST.
+        //      Then, perform min-cuts that balance the distance (or num of vertices?)
+        //      in the resulting bisection of the graph. 
+
+        // OR TODO :> traverse the adjacency list of the graph representation of the 
+        // EMST, which will give us the "nearest neighbor" approach we want
+
+        // OR TODO :> take the max adjacency vertex, do Breadth-First-Search via queue, create patches
+        // using the distance measurement
+
+        std::cout<< "max_adj_vtx: " << max_adj_vtx << std::endl;
+
+        // just pop adjacencies into the queue, test distance from current_node.
+        // if it's too far away from current node, put back in queue?
+        // OR :> once we get too far from the current node, put its neighbors in the 
+        // back of the queue? 
+        // ^^^ this might make more sense with a priority queue, but I would need to use
+        // std::pair to capture both the priority and the actual data...
+
+        // BEGIN :: Bastardized Breadth-First-Search
+        size_t current_source = max_adj_vtx;
+        
+        for (int i=0; i<3; i++) {
+            rgb[i] = rand()%256;
+        }
+        patch_counter++;
+
+        boost::get<4>(points[current_source]) = patch_counter;
+        boost::get<5>(points[current_source]) = rgb;
+
+        std::list<size_t> nodes;    // <- really, a queue, but we're pushing on both ends
+        std::vector<size_t> visited; 
+
+        visited.push_back(current_source);
+        nodes.push_back(current_source);
+
+        const double WITHIN_DIST = 1.0;
+
+        while (! nodes.empty()) {
+            size_t v = nodes.front();
+            nodes.pop_front();
+
+            PointData source_point = points[current_source];
+            PointData v_point = points[v];
+
+            // if `v` point within a meter radius of current `source` point
+            if (std::sqrt(
+                    CGAL::squared_distance(
+                            boost::get<0>(source_point), 
+                            boost::get<0>(v_point)
+                        )
+                ) <= WITHIN_DIST
+            ) {
+                // if true, set patch id and patch colormap
+                boost::get<4>(points[v]) = patch_counter;
+                boost::get<5>(points[v]) = rgb;
+
+            } else {
+                // if false, set new current_source and patch info
+                current_source = v;
+                patch_counter++;
+                for (int i=0; i<3; i++) {
+                    rgb[i] = rand()%256;
+                }
+                boost::get<4>(points[v]) = patch_counter;
+                boost::get<5>(points[v]) = rgb;
+            }
+
+            boost::graph_traits<Graph>::adjacency_iterator ai, a_end;
+            // forall adjacent vertices of `v`
+            for (boost::tie(ai, a_end) = boost::adjacent_vertices(v, spanning_graph); ai != a_end; ++ai) {
+                if (std::find(visited.begin(), visited.end(), *ai) == visited.end()) {
+                    // if the adjacent vertex hasn't been marked as visited 
+                    size_t point_idx = *ai;
+                    visited.push_back(point_idx);
+
+                    PointData source_point = points[current_source];                    
+                    PointData adj_point = points[point_idx];
+
+                    // if point within a meter radius of current `source` point
+                    if (std::sqrt(
+                            CGAL::squared_distance(
+                                    boost::get<0>(source_point), 
+                                    boost::get<0>(adj_point)
+                                )
+                        ) <= WITHIN_DIST
+                    ) {
+                        nodes.push_front(point_idx);
+                    } else {
+                        nodes.push_back(point_idx);
+                    }
+                }
+            }
+        }
+
         it++; // next shape
     }
 
@@ -558,7 +674,7 @@ int main (int argc, char* argv[]) {
     //  Diagnostic color output of detected shapes
     //
     std::ofstream shapefile("diagnostic-RANSAC-shapes.ply");
-    CGAL::IO::set_ascii_mode(ofile); // NOTE :> writing binary of colors is broken
+    CGAL::IO::set_ascii_mode(shapefile); // NOTE :> writing binary of colors is broken
     CGAL::IO::write_PLY_with_properties(
         shapefile,
         points,
@@ -570,6 +686,28 @@ int main (int argc, char* argv[]) {
         ),
         std::make_tuple(
             ShapeColorMap(),
+            CGAL::IO::PLY_property<uint8_t>("red"),
+            CGAL::IO::PLY_property<uint8_t>("green"),
+            CGAL::IO::PLY_property<uint8_t>("blue")
+        )
+    );
+
+    //
+    //  Diagnostic color output of detected patches
+    // 
+    std::ofstream patchfile("diagnostic-patch_colors.ply");
+    CGAL::IO::set_ascii_mode(patchfile); // NOTE :> writing binary of colors is broken
+    CGAL::IO::write_PLY_with_properties(
+        patchfile,
+        points,
+        CGAL::make_ply_point_writer(
+            PointMap()
+        ),
+        CGAL::make_ply_normal_writer(
+            NormalMap()
+        ),
+        std::make_tuple(
+            PatchColorMap(),
             CGAL::IO::PLY_property<uint8_t>("red"),
             CGAL::IO::PLY_property<uint8_t>("green"),
             CGAL::IO::PLY_property<uint8_t>("blue")
