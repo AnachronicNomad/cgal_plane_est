@@ -70,7 +70,7 @@ using PointData = boost::tuple<
     RGBA,       // RANSAC Shape Colorization
     size_t,     // Estimated Patch ID
     RGBA,       // Estimated Patch Colorization
-    size_t>;    // orderering in the container? 
+    size_t>;    // ordering in the container? 
 
 using PointMap = CGAL::Nth_of_tuple_property_map<0, PointData>;
 using NormalMap = CGAL::Nth_of_tuple_property_map<1, PointData>;
@@ -463,209 +463,151 @@ int main (int argc, char* argv[]) {
             tr.number_of_edges() << "\tedges\n\t" <<
             tr.number_of_facets() << "\tfacets" << std::endl;
 
-        // build a Graph out of the triangulation that we can do a Minimum-Spanning-Tree on
-        // examples taken from https://www.boost.org/doc/libs/1_80_0/libs/graph/example/kruskal-example.cpp
-        using Graph = boost::adjacency_list<
-                        boost::vecS,            // OutEdgeList
-                        boost::vecS,            // VertexList
-                        boost::undirectedS,     // Directed
-                        boost::no_property,     // VertexProperties
-                        boost::property< boost::edge_weight_t, double >  // EdgeProperties
-                        >;
-        using Edge = boost::graph_traits<Graph>::edge_descriptor;
-        using E = std::pair< size_t, size_t >; // <: TODO - should be iterator index of vertex in Triangulation_3 instead of size_t?
-
-        Graph g(tr.number_of_vertices());
-        boost::property_map< Graph, boost::edge_weight_t >::type weightmap = boost::get(boost::edge_weight, g);
-
-        // iterate over finite edges in the triangle, and add these 
-        for (
-                Triangulation_3::Finite_edges_iterator eit = tr.finite_edges_begin();
-                eit != tr.finite_edges_end(); 
-                eit++
-        ) 
-        {
-            Triangulation_3::Segment s = tr.segment(*eit);
-
-            Point_3 vtx = s.point(0);
-            Point_3 n_vtx = s.point(1);
-
-            // locate the (*eit), get vertex handles?
-            // from https://www.appsloveworld.com/cplus/100/204/how-to-get-the-source-and-target-points-from-edge-iterator-in-cgal
-            Triangulation_3::Vertex_handle vh1 = eit->first->vertex((eit->second + 1) % 3);
-            Triangulation_3::Vertex_handle vh2 = eit->first->vertex((eit->second + 2) % 3);
-
-            double weight = std::sqrt(CGAL::squared_distance(vtx, n_vtx));
-
-            if ( (false == tr.is_infinite(vh1)) && 
-                 (false == tr.is_infinite(vh2)) )
-            {
-                Edge e;
-                bool inserted;
-                boost::tie(e, inserted)
-                    = boost::add_edge(
-                        boost::get<6>(vh1->info()),
-                        boost::get<6>(vh2->info()),
-                        g
-                    );
-                weightmap[e] = weight;
-            }
-        }
-
-        // build Euclidean-Minimum-Spanning-Tree (EMST) as list of simplex edges between vertices
-        std::vector<Edge> spanning_tree;
-        boost::kruskal_minimum_spanning_tree(g, std::back_inserter(spanning_tree));
-
-        // TODO :> recreate a new Graph containing only those edges of the EMST
-        Graph spanning_graph(tr.number_of_vertices());
-        boost::property_map< Graph, boost::edge_weight_t >::type spanning_weightmap = boost::get(boost::edge_weight, spanning_graph);
-
-        // iterate minimum spanning tree to build a new Graph with specified edges
-        std::cout << "Found minimum spanning tree of " << spanning_tree.size() << " edges for #vertices " << tr.number_of_vertices() << std::endl;
-        for (std::vector< Edge >::iterator ei = spanning_tree.begin();
-            ei != spanning_tree.end(); ++ei)
-        {
-            // Add the edge going one way
-            size_t source = boost::source(*ei, g); 
-            size_t target = boost::target(*ei, g);
-            double weight = weightmap[*ei];
-
-            Edge e;
-            bool inserted;
-            boost::tie(e, inserted) = 
-                boost::add_edge(
-                    source, 
-                    target,
-                    spanning_graph
-                );
-            spanning_weightmap[e] = weight;
-
-            // also add edge going the other way
-            Edge e2;
-            bool inserted2;
-            boost::tie(e2, inserted2) = 
-                boost::add_edge(
-                    target, 
-                    source,
-                    spanning_graph
-                );
-            spanning_weightmap[e2] = weight;
-        }
-
-        boost::graph_traits<Graph>::vertex_iterator i, end;
-        boost::graph_traits<Graph>::adjacency_iterator ai, a_end;
-        boost::property_map<Graph, boost::vertex_index_t>::type index_map = boost::get(boost::vertex_index, g);
-
-        size_t max_adjacency = 0;
-        boost::graph_traits<Graph>::vertex_descriptor max_adj_vtx;
-
-        size_t n_vertices = std::distance(i, end);
-
-        for (boost::tie(i, end) = boost::vertices(spanning_graph); i != end; ++i) {
-            boost::tie(ai, a_end) = boost::adjacent_vertices(*i, spanning_graph);
-
-            size_t adj_count = std::distance(ai, a_end);
-
-            if (adj_count > max_adjacency) {
-                max_adjacency = adj_count;
-                max_adj_vtx = *i;
-            }
-        }
-
-        // TODO :> Find maximum spanning distance between any two vertices in MST.
-        //      Then, perform min-cuts that balance the distance (or num of vertices?)
-        //      in the resulting bisection of the graph. 
-
-        // OR TODO :> traverse the adjacency list of the graph representation of the 
-        // EMST, which will give us the "nearest neighbor" approach we want
-
-        // OR TODO :> take the max adjacency vertex, do Breadth-First-Search via queue, create patches
-        // using the distance measurement
-
-        std::cout<< "max_adj_vtx: " << max_adj_vtx << std::endl;
-
-        // just pop adjacencies into the queue, test distance from current_node.
-        // if it's too far away from current node, put back in queue?
-        // OR :> once we get too far from the current node, put its neighbors in the 
-        // back of the queue? 
-        // ^^^ this might make more sense with a priority queue, but I would need to use
-        // std::pair to capture both the priority and the actual data...
-
-        // BEGIN :: Bastardized Breadth-First-Search
-        size_t current_source = max_adj_vtx;
-        
-        for (int i=0; i<3; i++) {
-            rgb[i] = rand()%256;
-        }
-        patch_counter++;
-
-        boost::get<4>(points[current_source]) = patch_counter;
-        boost::get<5>(points[current_source]) = rgb;
-
-        std::list<size_t> nodes;    // <- really, a queue, but we're pushing on both ends
-        std::vector<size_t> visited; 
-
-        visited.push_back(current_source);
-        nodes.push_back(current_source);
-
+        //
+        //  Attempt BFS-traversal of triangulation
+        //
         const double WITHIN_DIST = 1.0;
 
-        while (! nodes.empty()) {
-            size_t v = nodes.front();
-            nodes.pop_front();
+        std::vector<size_t> visited = {};
+        std::vector< std::pair<Point_3, std::vector<size_t>> > buckets = {};
+        std::queue<Triangulation_3::Vertex_handle> queue = {};
 
-            PointData source_point = points[current_source];
-            PointData v_point = points[v];
+        Triangulation_3::Vertex_handle current_source =
+            tr.finite_vertices_begin();
 
-            // if `v` point within a meter radius of current `source` point
-            if (std::sqrt(
-                    CGAL::squared_distance(
-                            boost::get<0>(source_point), 
-                            boost::get<0>(v_point)
-                        )
-                ) <= WITHIN_DIST
-            ) {
-                // if true, set patch id and patch colormap
-                boost::get<4>(points[v]) = patch_counter;
-                boost::get<5>(points[v]) = rgb;
+        visited.push_back(boost::get<6>(current_source->info()));
+        queue.push(current_source);
 
-            } else {
-                // if false, set new current_source and patch info
-                current_source = v;
-                patch_counter++;
-                for (int i=0; i<3; i++) {
-                    rgb[i] = rand()%256;
-                }
-                boost::get<4>(points[v]) = patch_counter;
-                boost::get<5>(points[v]) = rgb;
-            }
+        std::vector<Triangulation_3::Vertex_handle> adjacent;
 
-            boost::graph_traits<Graph>::adjacency_iterator ai, a_end;
-            // forall adjacent vertices of `v`
-            for (boost::tie(ai, a_end) = boost::adjacent_vertices(v, spanning_graph); ai != a_end; ++ai) {
-                if (std::find(visited.begin(), visited.end(), *ai) == visited.end()) {
-                    // if the adjacent vertex hasn't been marked as visited 
-                    size_t point_idx = *ai;
-                    visited.push_back(point_idx);
+        // breadth-first traversal
+        while (! queue.empty()) {
+            //v := Q.dequeue()
+            Triangulation_3::Vertex_handle point_h = queue.front();
+            queue.pop(); 
 
-                    PointData source_point = points[current_source];                    
-                    PointData adj_point = points[point_idx];
+            size_t point_idx = boost::get<6>(point_h->info());
+            Point_3 point_info = boost::get<0>(point_h->info());
 
-                    // if point within a meter radius of current `source` point
-                    if (std::sqrt(
-                            CGAL::squared_distance(
-                                    boost::get<0>(source_point), 
-                                    boost::get<0>(adj_point)
-                                )
-                        ) <= WITHIN_DIST
-                    ) {
-                        nodes.push_front(point_idx);
-                    } else {
-                        nodes.push_back(point_idx);
+            //
+            // figure out which bucket we should put this index into
+            //
+
+            // we need to identify candidate patches in buckets which meet the 
+            // maximum complete linkage criteria (all pairwise distances <= WITHIN_DIST)
+            std::vector<size_t> candidates = {};
+
+            for (size_t i=0; i < buckets.size(); i++) {
+
+                float max_dist = 0.0;
+
+                std::vector<size_t> bucket_pts_idx = buckets[i].second;
+                for (size_t j_idx=0; j_idx < bucket_pts_idx.size(); j_idx++) {
+                    Point_3 b_pt = boost::get<0>(points[ bucket_pts_idx[j_idx] ]);
+                    float xdist = CGAL::sqrt(CGAL::squared_distance(point_info, b_pt));
+
+                    if (xdist > max_dist) {
+                        max_dist = xdist;
+                    }
+                    if (max_dist > WITHIN_DIST) {
+                        break;
                     }
                 }
+
+                if (max_dist > WITHIN_DIST) {
+                    continue;
+                } else {
+                    candidates.push_back(i);
+                }
             }
+
+            // if no candidates, make a new bucket
+            if (candidates.size() < 1) {
+                auto p = std::pair<Point_3, std::vector<size_t>>( point_info, {point_idx} );
+                buckets.push_back(p);
+            } else {
+                // else, out of these candidates, identify bucket which has minimum distance 
+                // to centroid of that bucket
+                size_t min_idx; 
+                double min_centroid_dist = std::numeric_limits<double>::infinity();
+                for (size_t i=0; i < candidates.size(); i++) {
+                    double xdist = CGAL::sqrt(CGAL::squared_distance(point_info, buckets[candidates[i]].first));
+                    if (xdist < min_centroid_dist) {
+                        min_centroid_dist = xdist;
+                        min_idx = i;
+                    }
+                }
+                // add to bucket, update centroid
+                buckets[candidates[min_idx]].second.push_back(point_idx);
+
+                //std::vector<Point_3> patch_points = {};
+                std::vector<float> x_pos = {};
+                std::vector<float> y_pos = {};
+                std::vector<float> z_pos = {};
+                for (size_t i=0; i < buckets[candidates[min_idx]].second.size(); i++) {
+                    //patch_points.push_back( boost::get<0>(points[ buckets[candidates[min_idx]].second[i] ]) );
+                    Point_3 p = boost::get<0>(points[ buckets[candidates[min_idx]].second[i] ]);
+                    x_pos.push_back(p.x());
+                    y_pos.push_back(p.y());
+                    z_pos.push_back(p.z());
+                }
+
+                auto const size = static_cast<float>(x_pos.size());
+                buckets[candidates[min_idx]].first = Point_3(
+                    std::reduce(x_pos.begin(), x_pos.end()) / size,
+                    std::reduce(y_pos.begin(), y_pos.end()) / size,
+                    std::reduce(z_pos.begin(), z_pos.end()) / size
+                );
+
+                // calculate new centroid using CGAL
+                /*
+                buckets[candidates[min_idx]].first = CGAL::centroid(
+                    patch_points.begin(),
+                    patch_points.end(),
+                    CGAL::Dimension_tag<2>()
+                );
+                */
+            }
+
+            //for all edges from v to w in G.adjacentEdges(v) do
+            tr.finite_adjacent_vertices(point_h, std::back_inserter(adjacent));
+            for (auto a = adjacent.begin(); a != adjacent.end(); a++)
+            {
+                Triangulation_3::Vertex_handle a_h = (*a);
+                size_t a_idx = boost::get<6>(a_h->info());
+
+                //std::cout << "Found adjacent: " << a_idx << std::endl;
+
+                //if w is not labeled as explored then
+                if (std::find(visited.begin(), visited.end(), a_idx) == visited.end()) {
+                    //label w as explored
+                    visited.push_back(a_idx);
+
+                    //w.parent := v
+
+                    //Q.enqueue(w)
+                    queue.push(a_h);
+                }
+            } 
         }
+
+        // update all points with their patch_counter and patch color
+        for (size_t i=0; i < buckets.size(); i++) {
+            for (int i=0; i<3; i++) {
+                rgb[i] = rand()%256;
+            }
+
+            for (size_t j=0; j < buckets[i].second.size(); j++) {
+                size_t p_idx = buckets[i].second[j];
+                
+                boost::get<4>(points[p_idx]) = patch_counter;
+                boost::get<5>(points[p_idx]) = rgb;
+            }
+
+            patch_counter++;
+        }
+
+        std::cout << "Now have " << patch_counter << "patches" << std::endl;
 
         it++; // next shape
     }
